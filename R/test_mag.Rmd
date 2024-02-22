@@ -1,0 +1,63 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=TRUE}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(stringr)
+library(lubridate)
+library(rgl)
+```
+
+
+```{r}
+
+
+
+mag<- bind_rows(
+a=read_xls("./Magnetometer 2024-01-31 22-41-48.xls"),
+b=read_xls("./Magnetometer 2024-01-31 22-43-01.xls"),
+c=read_xls("./Magnetometer 2024-01-31 22-44-22.xls"),
+.id="run"
+)
+names(mag)<-c("run", "t","x","y","z","temp")
+```
+
+```{r}
+mag <- mag %>% 
+  mutate(m=sqrt(x^2 + y^2 + z^2),
+         ux=x/m, uy=y/m, uz=z/m)
+mag.sum <- mag %>% group_by(run) %>% summarize(ax=median(ux),ay=median(uy),az=median(uz))
+
+mag.mag <- left_join(mag, mag.sum, by=join_by(run)) %>%
+  mutate(am=sqrt(ax^2+ay^2+az^2), d=sqrt((ax-ux)^2 + (ay-uy)^2 + (az-uz)^2)) %>%
+  mutate(ang=acos(ax*ux+ay*uy+az*uz), ox=0, oy=0, oz=0) 
+```
+
+```{r}
+
+tmag <- pivot_longer(mag, cols=c("ux","uy","uz"), names_to="axis", values_to=c("value"))
+
+ggplot(tmag, aes(value, colour=axis)) + geom_histogram() + facet_wrap(vars(run, axis))
+ggplot(mag, aes(m, colour=run)) + geom_histogram()
+ggplot(mag.mag, aes(d, colour=run)) + geom_histogram()
+ggplot(mag.mag, aes(ang, colour=run)) + geom_histogram()
+
+group_by(mag.mag,run) %>% summarize(med=median(d), var=sd(d))
+
+```
+
+```{r}
+
+segments3d(
+  x=as.vector(t(mag.mag%>% select(ox,x))),
+  y=as.vector(t(mag.mag%>% select(oy,y))),
+  z=as.vector(t(mag.mag%>% select(oz,z)))
+)
+
+```
+
