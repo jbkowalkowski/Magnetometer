@@ -1,0 +1,40 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+
+theta <- function(x,y,z)
+{
+  m <- sqrt(x^2+y^2)
+  case_when(z>0 ~ atan(m/z),
+    z<0 ~ pi + atan(m/z),
+    z==0&x!=0&y!=0 ~ pi/2,
+    x==0&y==0&z==0 ~ 0
+  )
+}
+
+phi <- function(x,y)
+{
+  case_when(x>0 ~ atan(y/x),
+    x<0&y>=0 ~ atan(y/x)+pi,
+    x<0&y<0 ~ atan(y/x)-pi,
+    x==0&y>0 ~ pi/2,
+    x==0&y<0 ~ -pi/2,
+    x==0 & y==0 ~ 0
+  )
+}
+
+```
+
+```{r}
+df <- read.csv("../data/readings_2024-02-20-11:16.csv")
+```
+
+```{r}
+df <- df %>% mutate(r = sqrt(x^2+y^2+z^2), th=theta(x,y,z), ph=phi(x,y))
+```
+
+
