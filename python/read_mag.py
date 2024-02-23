@@ -48,32 +48,69 @@ def signal_handler(sig, frame):
     all_done=True
     #sys.exit(0)
 
+def rate_to_reg(rate):
+    # 80 = 0x50 ~= .25 seconds (just a guess)
+    m=80/.25
+    return hex(int(rate*m))[2:]
 
-def initialize():
+def initialize(args):
+    hexrate = rate_to_reg(args.rate)
+    delay_cmd = bytes(f'0WC35B{hexrate}\r','utf-8')
+
     s=write_cmd(ser,b'0WC01B00\r', 'no autostart')
     s=write_cmd(ser,b'0WC00B00\r', 'no echo')
     s=write_cmd(ser,b'0WC02B00\r', 'raw data transfers')
     s=write_cmd(ser,b'0WC08B10\r', 'continuous ASCII send') # ASCII
     #s=write_cmd(ser,b'0WC08B11\r', 'continuous binary send') # Binary
-    s=write_cmd(ser,b'0WC35B50\r', 'delay of 0x50 between sends (.25 sec?)')
+    #s=write_cmd(ser,b'0WC35B50\r', 'delay of 0x50 between sends (.25 sec?)')
+    s=write_cmd(ser,delay_cmd, f'delay of {hexrate} between sends (.25 sec?)')
     s=write_cmd(ser,b'0WC01B5A\r', 'autostart option on')
 
+class MeasurementBuiler:
+    def __init__(self, p):
+        self.params = p
+        self.count = 0
+        self.current = b''
+
+    def add(self,s):
+        # a reading always ends in \x04, including the ack messages.
+        # a reading always starts with MX:
+
+        # add s to current
+        # scan for end of message
+        # slice s for call to store
+        # return measurement from current, leaving remaining bytes
+
+        rc = self.store(s)
+        if rc == True:
+            self.current=b''
+        return rc
+
+    def store(self, meas):
+        rc=False
+        ss=[float(x.strip(': ')) for x in self.params.pat.findall(meas.decode("utf-8"))]
+        ss2 = [x/(2**15) for x in ss]
+        # this check should not be here if the add() code checks for begin/end of measurement
+        if len(ss)>1: 
+            self.params.fout_csv.writerow(ss+ss2)
+            self.params.fout.flush()
+            self.count+=1
+            rc=True
+        return rc
+
 # pass the parameters in as a struct
-def collect_data(ser, total, fout):
-    print("sending 0sd start data transfers")
-    ser.write(b'0sd\r')
+def collect_data(p):
+    mb = MeasurementBuiler(p)
+    print("sending 0sd to start data transfers")
+    p.ser.write(b'0sd\r')
 
     # also check all_done flag here
-    for i in range(total):
-        if all_done: break
-        s = ser.read_until(expected='\n', size=500)
-        ss=[float(x.strip(': ')) for x in pat.findall(s.decode("utf-8"))]
-        ss2 = [x/(2**15) for x in ss]
+    while not all_done and (p.total==0 | mb.count<p.total): 
+        s = p.ser.read(100)
+        mb.add(s)
         
         #s = ser.read(500)
         print(ss+ss2)
-        if len(ss)>1: fout.writerow(ss+ss2)
-        # be sure to flush the data
 
 
 class Fake:
@@ -99,41 +136,33 @@ def get_args():
 
     return pp
 
-def rate_to_reg(rate):
-    # 80 = 0x50 ~= .25 seconds (just a guess)
-    m=80/.25
-    return hex(int(rate*m))[2:]
-
 
 if __name__=="__main__":
     a = get_args()
 
-    now = time.strftime('%Y%m%d-%H:%M:%S',time.localtime())
-    RTS = rate_to_reg(a.rate)
-    filename = "readings-{a.name}-{now}.csv" 
+    a.now = time.strftime('%Y%m%d-%H:%M:%S',time.localtime())
+    a.RTS = rate_to_reg(a.rate)
+    a.filename = "readings-{a.name}-{now}.csv" 
+    a.pat = re.compile(':.* ')
 
-    pat = re.compile(':.* ')
+    a.fout = open(filename,'w', newline='')
+    a.fout_csv = csv.writer(fout, delimiter=',')
+    a.fout_csv.writerow(["x.raw","y.raw","z.raw","T.raw","x","y","z","T", "mag", "az", "alt"])
+
+    a.ser = serial.Serial(a.port, 9600, timeout=a.rate) # TTL
+    print(a.ser)
+
     signal.signal(signal.SIGINT, signal_handler)
+    initialize(a)
+    # clear the device here (read until empty)
+    collect_data(a)
 
-    fout = open(filename,'w', newline='')
-    fout_csv = csv.writer(fout, delimiter=',')
-    fout_csv.writerow(["x.raw","y.raw","z.raw","T.raw","x","y","z","T", "mag", "az", "alt"])
+    s = write_complete(a.ser)
 
-    ser = serial.Serial(a.port, 9600, timeout=a.rate) # TTL
-    print(ser)
+    # add clear device here (read until empty) 
+    s = a.ser.read(500)
 
-    s = write_complete(ser)
-
-    # add clear output here... 
-
-    #print(s, file=fout)
-    s = ser.read(500)
-    #s = ser.read_until('\x04', 500)
-    print(s)
-    #print(s, file=fout)
-
-
-    ser.close()
-    fout.close()
+    a.ser.close()
+    a.fout.close()
 
 
