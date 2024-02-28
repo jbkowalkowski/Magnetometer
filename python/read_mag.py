@@ -57,20 +57,50 @@ def initialize(args):
     hexrate = rate_to_reg(args.rate)
     delay_cmd = bytes(f'0WC35B{hexrate}\r','utf-8')
 
-    s=write_cmd(ser,b'0WC01B00\r', 'no autostart')
-    s=write_cmd(ser,b'0WC00B00\r', 'no echo')
-    s=write_cmd(ser,b'0WC02B00\r', 'raw data transfers')
-    s=write_cmd(ser,b'0WC08B10\r', 'continuous ASCII send') # ASCII
-    #s=write_cmd(ser,b'0WC08B11\r', 'continuous binary send') # Binary
-    #s=write_cmd(ser,b'0WC35B50\r', 'delay of 0x50 between sends (.25 sec?)')
-    s=write_cmd(ser,delay_cmd, f'delay of {hexrate} between sends (.25 sec?)')
-    s=write_cmd(ser,b'0WC01B5A\r', 'autostart option on')
+    s=write_cmd(args.ser,b'0WC01B00\r', 'no autostart')
+    s=write_cmd(args.ser,b'0WC00B00\r', 'no echo')
+    s=write_cmd(args.ser,b'0WC02B00\r', 'raw data transfers')
+    s=write_cmd(args.ser,b'0WC08B10\r', 'continuous ASCII send') # ASCII
+    #s=write_cmd(args.ser,b'0WC08B11\r', 'continuous binary send') # Binary
+    #s=write_cmd(args.ser,b'0WC35B50\r', 'delay of 0x50 between sends (.25 sec?)')
+    s=write_cmd(args.ser,delay_cmd, f'delay of {hexrate} between sends (.25 sec?)')
+    s=write_cmd(args.ser,b'0WC01B5A\r', 'autostart option on')
+
+def clear_device(args):
+    all_s=b''
+    while(True):
+        s = args.ser.read(10)
+        if len(s) == 0: break
+        all_s = all_s + s
+    return all_s
 
 class MeasurementBuiler:
     def __init__(self, p):
         self.params = p
         self.count = 0
         self.current = b''
+        self.state = 's' # state 's' find start, 'e' find end
+
+    def extract_all(self):
+        rc=False
+
+        if self.state=='s':
+            i=self.current.find(b"MX")
+            if i>=0:
+                self.current=self.current[i:]
+                self.state='e'
+        if self.state == 'e':
+            i=self.current.find(b'\x04')
+            if i>=0:
+                meas = self.current[0:i+1]
+                self.current=self.current[i+1:]
+                self.store(meas)
+                self.state='s'
+                rc=True
+
+        #print(f'state={self.state}, rc={rc}')
+        return rc
+
 
     def add(self,s):
         # a reading always ends in \x04, including the ack messages.
@@ -81,21 +111,21 @@ class MeasurementBuiler:
         # slice s for call to store
         # return measurement from current, leaving remaining bytes
 
-        rc = self.store(s)
-        if rc == True:
-            self.current=b''
+        rc=0
+        self.current += s
+        while(self.extract_all()==True):
+            rc+=1
+
         return rc
 
     def store(self, meas):
         rc=False
         ss=[float(x.strip(': ')) for x in self.params.pat.findall(meas.decode("utf-8"))]
         ss2 = [x/(2**15) for x in ss]
-        # this check should not be here if the add() code checks for begin/end of measurement
-        if len(ss)>1: 
-            self.params.fout_csv.writerow(ss+ss2)
-            self.params.fout.flush()
-            self.count+=1
-            rc=True
+        self.params.fout_csv.writerow(ss+ss2+[0.0,0.0,0.0])
+        self.params.fout.flush()
+        self.count+=1
+        rc=True
         return rc
 
 # pass the parameters in as a struct
@@ -108,10 +138,12 @@ def collect_data(p):
     while not all_done and (p.total==0 | mb.count<p.total): 
         s = p.ser.read(100)
         mb.add(s)
-        
-        #s = ser.read(500)
-        print(ss+ss2)
+        print('.', end='')
 
+    print("Stopping data collection")
+    # last measurement is discarded
+    s = write_complete(p.ser)
+    s = clear_device(p)
 
 class Fake:
     port="COM3"
@@ -129,38 +161,61 @@ def get_args():
     parser.add_argument("-n","--num-samples", default=Fake.total_samples, dest="total_samples",help="Total number of samples to collect, default: 0=go forever")
     parser.add_argument("-r","--run-name", default=Fake.name, dest="name",help="Name of this run (optional)")
     parser.add_argument("-s","--send_rate", default=Fake.rate, dest="rate",help="Send rate in seconds (default = .25)")
+    parser.add_argument("-t","--test", default=False, action='store_true', dest="test",help="run a simple test")
     # examples of swithes
     #parser.add_argument("-d","--show-dates", default=Fake.show_dates, action='store_true', dest="show_dates",help="Show dates on graph")
     #parser.add_argument("-r","--no-render", default=Fake.render, action='store_false', dest="render",help="Do not view the graph")
     pp = parser.parse_args()
 
+    if pp.test:
+        pp.name="test"
+
     return pp
+
+def do_test(a):
+    f = open("../data/test_data.txt", mode="rb")
+    data_in = f.read().decode("unicode_escape")
+    f.close()
+
+    print("From file:")
+    #print(data_in)
+    print(f'type = {type(data_in)}, length={len(data_in)}')
+    data = data_in.encode('utf-8')
+    print("Converted to bytes")
+    print(data)
+    #print(data.decode())
+    print(f'type = {type(data)}, length={len(data)}')
+    print(data.find(b'\x04'))
+
+
+    mb = MeasurementBuiler(a)
+    c = mb.add(data)
+    print(f'test count = {c}')
 
 
 if __name__=="__main__":
     a = get_args()
 
-    a.now = time.strftime('%Y%m%d-%H:%M:%S',time.localtime())
+    a.now = time.strftime('%Y%m%d-%H-%M-%S',time.localtime())
     a.RTS = rate_to_reg(a.rate)
-    a.filename = "readings-{a.name}-{now}.csv" 
+    a.filename = f"readings-{a.name}-{a.now}.csv" 
     a.pat = re.compile(':.* ')
 
-    a.fout = open(filename,'w', newline='')
-    a.fout_csv = csv.writer(fout, delimiter=',')
+    a.fout = open(a.filename,'w', newline='')
+    a.fout_csv = csv.writer(a.fout, delimiter=',')
     a.fout_csv.writerow(["x.raw","y.raw","z.raw","T.raw","x","y","z","T", "mag", "az", "alt"])
+
+    if a.test:
+        do_test(a)
+        sys.exit(0)
 
     a.ser = serial.Serial(a.port, 9600, timeout=a.rate) # TTL
     print(a.ser)
 
     signal.signal(signal.SIGINT, signal_handler)
     initialize(a)
-    # clear the device here (read until empty)
+    clear_device(a)
     collect_data(a)
-
-    s = write_complete(a.ser)
-
-    # add clear device here (read until empty) 
-    s = a.ser.read(500)
 
     a.ser.close()
     a.fout.close()
