@@ -1,3 +1,14 @@
+'''
+let azim = Math.atan( dx / dy ); // keep result in radians
+let elev = Math.asin( dz / dist );
+
+ X = Math.round( dist * ( Math.cos( elev ) * Math.sin( azim ) ) );
+ Y = Math.round( dist * ( Math.cos( elev ) * Math.cos( azim ) ) );
+ Z = Math.round( dist * Math.sin( elev ) );
+'''
+
+
+
 
 import serial
 import re
@@ -7,6 +18,9 @@ import sys
 import os
 import argparse
 import time
+from math import sqrt, atan, pi, acos, atan2, asin
+import numpy as np
+from datetime import datetime as dt
 
 '''
 
@@ -74,12 +88,43 @@ def clear_device(args):
         all_s = all_s + s
     return all_s
 
-class MeasurementBuiler:
+def to_r(x,y,z):
+    return sqrt(x**2+y**2+z**2)
+
+# azimuth
+def to_theta(x,y,z):
+    r=to_r(x,y,z)
+    m=sqrt(x**2+y**2)
+    return atan2(x,y) #* (180/pi)
+    return acos(z/r)
+    return atan(m/z) if z>0 else \
+        atan(m/z)+pi if z<0 else \
+            pi/2 if z==0 and x*y!=0 else \
+                None if x==0 and y==0 and z==0 else 0 
+
+# elevation
+def to_phi(x,y,z):
+    r=to_r(x,y,z)
+    return asin(z/r) #* (180/pi)
+    return np.sign(y)*acos(x/sqrt(x**2+y**2))
+    return atan(y/x) if x>0 else \
+        atan(y/x)+pi if x<0 and y>=0 else \
+            atan(y/x)-pi if x<0 and y<0 else \
+                pi/2 if x==0 and y>0 else \
+                    -pi/2 if x==0 and y<0 else \
+                        None if x==0 and y==0 else 0
+
+class MeasurementBuilder:
     def __init__(self, p):
         self.params = p
         self.count = 0
         self.current = b''
         self.state = 's' # state 's' find start, 'e' find end
+
+        p.fout = open(a.filename,'w', newline='')
+        p.fout_csv = csv.writer(a.fout, delimiter=',')
+        p.fout_csv.writerow(["timestamp","x.raw","y.raw","z.raw","T.raw","x","y","z","T", "mag", "az", "alt"])
+
 
     def extract_all(self):
         rc=False
@@ -119,10 +164,14 @@ class MeasurementBuiler:
         return rc
 
     def store(self, meas):
+        now = dt.now().strftime("%y-%m-%d %H:%M:%S")
         rc=False
         ss=[float(x.strip(': ')) for x in self.params.pat.findall(meas.decode("utf-8"))]
         ss2 = [x/(2**15) for x in ss]
-        self.params.fout_csv.writerow(ss+ss2+[0.0,0.0,0.0])
+        mag = sqrt(ss2[0]**2 + ss2[1]**2 + ss2[2]**2)
+        az=to_theta(ss2[0], ss2[1], ss2[2])
+        alt=to_phi(ss2[0], ss2[1], ss2[2])
+        self.params.fout_csv.writerow([now]+ss+ss2+[mag,az,alt])
         self.params.fout.flush()
         self.count+=1
         rc=True
@@ -130,7 +179,7 @@ class MeasurementBuiler:
 
 # pass the parameters in as a struct
 def collect_data(p):
-    mb = MeasurementBuiler(p)
+    mb = MeasurementBuilder(p)
     print("sending 0sd to start data transfers")
     p.ser.write(b'0sd\r')
 
@@ -188,7 +237,7 @@ def do_test(a):
     print(data.find(b'\x04'))
 
 
-    mb = MeasurementBuiler(a)
+    mb = MeasurementBuilder(a)
     c = mb.add(data)
     print(f'test count = {c}')
 
@@ -201,9 +250,6 @@ if __name__=="__main__":
     a.filename = f"readings-{a.name}-{a.now}.csv" 
     a.pat = re.compile(':.* ')
 
-    a.fout = open(a.filename,'w', newline='')
-    a.fout_csv = csv.writer(a.fout, delimiter=',')
-    a.fout_csv.writerow(["x.raw","y.raw","z.raw","T.raw","x","y","z","T", "mag", "az", "alt"])
 
     if a.test:
         do_test(a)
