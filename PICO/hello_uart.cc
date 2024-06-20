@@ -34,6 +34,12 @@ void on_uart_rx() {
     }
 }
 
+void uart_put_string(uint ser, const std::string& st)
+{
+    for(auto c : st)
+        uart_putc_raw(ser, c)
+}
+
 std::string write_cmd(uint ser, std::string st, std::string msg)
 {
     uart_putc_raw(ser, "0L\r");
